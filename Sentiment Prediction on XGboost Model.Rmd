@@ -1,0 +1,86 @@
+---
+title: "Sentiment Analysis Prediction on XGboost Model
+author: "HD"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r}
+collected_data <- read.csv("C:/MSBA 24/unstructur/collected_data_with_sentiment.csv", header = TRUE)
+
+collected_data$CleanComments <- gsub("[[:punct:]]", "", collected_data$Comment)
+
+#Split the cleaned comments into words and count 
+collected_data$WordCount <- sapply(strsplit(collected_data$CleanComments, " +"), length)
+
+```
+
+Making a model to predict sentiment based on word count and rating and sentiment score because the sentiment score could only be strong or week but does not lean towards positive or negative, I am trying to reclassify the sentiment based on more results like word count and rating other than the previous sentiment from the sentiment analysis model. 
+
+```{r}
+
+library(caret)
+set.seed(123) 
+
+collected_data$BinarySentiment <- ifelse(collected_data$Sentiment == "POSITIVE", 1, 0)
+
+index <- createDataPartition(collected_data$BinarySentiment, p = 0.8, list = FALSE)
+train_data <- collected_data[index, ]
+test_data <- collected_data[-index, ]
+
+library(xgboost)
+
+# Prepare training and testing matrices
+train_matrix <- as.matrix(train_data[, c("WordCount", "Rating", "SentimentScore")])
+test_matrix <- as.matrix(test_data[, c("WordCount", "Rating", "SentimentScore")])
+
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_data$BinarySentiment)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_data$BinarySentiment)
+
+
+
+# Train the model
+xgb_model <- xgboost(
+    eta = 0.3,
+    data = dtrain,
+    nrounds = 100, 
+    verbose = 1, 
+    
+)
+
+# Predict on test data
+pred_probs <- predict(xgb_model, dtest)
+pred_labels <- ifelse(pred_probs > 0.5, 1, 0) # Convert probabilities to binary labels
+
+# Generate confusion matrix
+library(caret)
+conf_matrix <- confusionMatrix(factor(pred_labels), factor(test_data$BinarySentiment))
+
+print(conf_matrix)
+
+```
+
+There is 87.38% correct compare to the sentiment analysis model but I am not sure if it even matters because the analysis only get the sentiment from sentiment score.
+
+```{r}
+train_predictions <- predict(xgb_model, dtrain)
+train_predicted_sentiment <- ifelse(train_predictions > 0.5, "POSITIVE", "NEGATIVE")
+
+# Predicting sentiment for the test set
+test_predictions <- predict(xgb_model, dtest)
+test_predicted_sentiment <- ifelse(test_predictions > 0.5, "POSITIVE", "NEGATIVE")
+
+# Combining predictions
+combined_predictions <- character(nrow(collected_data))
+combined_predictions[index] <- train_predicted_sentiment
+combined_predictions[-index] <- test_predicted_sentiment
+
+collected_data$NewSentiment <- combined_predictions
+
+#compare the new sentiment with the old sentiment and grab out the different ones 
+different_sentiment <- collected_data[collected_data$Sentiment != collected_data$NewSentiment, c("Comment", "Sentiment", "NewSentiment")]
+
+```
+I listed all the comment that has different sentiment from the old sentiment and the new sentiment. and compared between them. but i cant look into all 1300 of them to see if the new sentiment is better than the old sentiment. But from the ones I looked at the newsentiment got some right and some wrong still. 
+
