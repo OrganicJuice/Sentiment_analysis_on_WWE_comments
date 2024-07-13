@@ -1,0 +1,334 @@
+---
+title: "Homework 1"
+author: "Your Name Here"
+format:
+  html:
+    toc: true
+    toc-location: left
+    self-contained: true
+---
+
+Professional wrestling, while not everyone's cup of tea, is big business. What started as a carnival act has turned into a global entertainment industry. Netflix recently announced a long-term streaming partnership with the biggest North American wrestling company, WWE -- this deal is reportedly worth \$5 billion. Like any large entity, WWE is not without competition, drama, and scandal. 
+
+1. Earning call transcript data cleaning. 
+
+```{r}
+library(stringr)
+directory_path <- "C:/MSBA 24/unstructur/calls"
+files <- list.files(path = directory_path, pattern = "\\.txt$", full.names = TRUE)
+
+# Extract ticker, quarter, and year from each filename
+extracted_info <- lapply(files, function(file_path) {
+  file_name <- basename(file_path)
+  
+  # Use regex to extract the parts of the filename
+  parts <- str_match(file_name, "^(.*)_q([1-4])_(20\\d{2})\\.txt$")
+  
+  # Read the content of the file
+  lines <- readLines(file_path, warn = FALSE)
+  lines <- lines[lines != ""]
+  
+  # Create a data frame for each line with the extracted information
+  data.frame(
+    ticker = rep(parts[, 2], length(lines)),
+    quarter = rep(paste("q", parts[, 3], sep = ""), length(lines)),
+    year = rep(parts[, 4], length(lines)),
+    content = lines,
+    stringsAsFactors = FALSE
+  )
+})
+
+# Combine all rows into a single data frame
+combined_data <- do.call(rbind, extracted_info)
+
+
+```
+
+
+2. Use the AlphaVantage api to get daily stock prices for WWE and related tickers going back 5 years. You cannot use any AlphaVantage packages. Tell me about the general trend that you are seeing. Has recent news impacted the stock price?
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(glue)
+library(lubridate)
+
+api_key <- "SRPZYPL6LK5NFBLE"
+symbols <- c("WWE", "TKO") 
+
+get_stock_data <- function(symbol, api_key) {
+
+  api_url <- glue("https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={api_key}")
+  
+  response <- GET(api_url)
+  data <- fromJSON(rawToChar(response$content))
+  
+  # Extract time series data
+  time_series_name <- names(data)[grepl("Time Series", names(data))]
+  if (length(time_series_name) == 0) {
+    stop("Time series data not found in the API response.")
+  }
+  time_series <- data[[time_series_name]]
+  
+  # Convert to a data frame and include symbol information
+  stock_prices <- do.call(rbind, lapply(names(time_series), function(date) {
+    as.data.frame(t(time_series[[date]]), stringsAsFactors = FALSE) %>%
+      mutate(date = as.Date(date), symbol = symbol)
+  })) %>%
+    rename_all(~c("open", "high", "low", "close", "volume", "date", "symbol")) %>%
+    mutate_at(vars(open:volume), as.numeric) %>%
+    select(symbol, date, open, high, low, close, volume)
+  
+  return(stock_prices)
+}
+
+combined_stock_prices <- lapply(symbols, function(symbol) get_stock_data(symbol, api_key)) %>%
+  bind_rows()
+
+# Filter for the last 5 years
+start_date <- Sys.Date() - years(5)
+combined_stock_prices_last_5_years <- combined_stock_prices %>%
+  filter(date >= start_date)
+
+#graph the data, make backgraound black
+
+library(ggplot2)
+ggplot(combined_stock_prices_last_5_years, aes(x = date, y = close, color = symbol)) +
+  geom_line() +
+  labs(title = "Stock Prices for WWE and TKO",
+       x = "Date",
+       y = "Close Price",
+       color = "Symbol") +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "black"),
+        panel.background = element_rect(fill = "black"),
+        axis.line = element_line(color = "white"),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white"),
+        legend.title = element_text(color = "white"),
+        legend.text = element_text(color = "white"))
+
+# In early 2023 founder Vin McMahon made a return to WWE which possibly made the incrase of stock. But the company stock went down after the merger with UFC but the recent news of scandal around WWE's president and his leaving did not reflect too much on the stock data possibly becasue of it is headging with the new Netflix deal. 
+```
+
+
+Just like every other nerdy hobby, professional wrestling draws dedicated fans. Wrestling fans often go to cagematch.net to leave reviews for matches, shows, and wrestlers. The following link contains the top 100 matches on cagematch: https://www.cagematch.net/?id=111&view=statistics
+
+3. What is the correlation between WON ratings and cagematch ratings?
+
+What is the correlation between WON ratings and cagematch ratings?
+
+Which wrestler has the most matches in the top 100?
+
+Which promotion has the most matches in the top 100? 
+
+What is each promotion's average WON rating?
+
+Select any single match and get the comments and ratings for that match into a data frame.
+
+```{r}
+#*
+library(rvest)
+library(magrittr)
+
+link <- url("https://www.cagematch.net/?id=111&view=statistics")
+cagematch <- read_html(link) %>% 
+  html_table(header = TRUE) %>%
+  .[[1]]
+
+convert_rating <- function(rating) {
+  # Count asterisks
+  stars <- stringr::str_count(rating, pattern = "\\*")
+  
+  # Convert fractions
+  fraction <- 0
+  if(grepl("1/4", rating)) {
+    fraction <- 0.25
+  } else if(grepl("1/2", rating)) {
+    fraction <- 0.5
+  } else if(grepl("3/4", rating)) {
+    fraction <- 0.75
+  }
+  
+  return(stars + fraction)
+}
+
+# Apply the conversion function to the WON column
+cagematch$WON_Numeric <- sapply(cagematch$WON, convert_rating)
+
+# View the first few rows to verify the conversion
+head(cagematch[c("WON", "WON_Numeric")])
+
+cor(cagematch$WON_Numeric, cagematch$Rating)
+```
+
+```{r}
+#**
+all_wrestlers <- unlist(strsplit(gsub("&|,", " vs. ", cagematch$`Match fixture`), " vs. "))
+
+# Trim whitespace from each name
+all_wrestlers <- trimws(all_wrestlers)
+name_counts <- table(all_wrestlers)
+
+# TOp3
+name_counts <- name_counts[name_counts ==max(name_counts) ]
+print(name_counts)
+```
+
+```{r}
+#***
+library(rvest)
+
+page_link <- url("https://www.cagematch.net/?id=111&view=statistics")
+page_content <- read_html(page_link)
+
+# Select all elements with a 'title' attribute under logo class
+titles <- page_content %>%
+  html_elements(".ImagePromotionLogoMini[title]") %>%
+  html_attr("title")
+promo_count <- data.frame(table(titles))
+
+print(promo_count[promo_count$Freq == max(promo_count$Freq),])
+
+```
+
+```{r}    
+#**** What is each promotion's average WON rating?
+cagematch$PromotionTitle <- titles
+average_won_by_promotion <- aggregate(WON_Numeric ~ PromotionTitle, data = cagematch, FUN = mean, na.rm = TRUE)
+average_won_by_promotion$WON_Numeric <- round(average_won_by_promotion$WON_Numeric, 2)
+```
+
+
+```{r}
+#***** Select any single match and get the comments and ratings for that match into a data frame.
+
+ric_flair_vs_steamboat_rtg <- url("https://www.cagematch.net/?id=111&nr=808&page=98")
+drip_rtg <- read_html(ric_flair_vs_steamboat_rtg)
+
+all_ratings <- drip_rtg %>% 
+  html_table(header = TRUE) %>% 
+  `[[`(1)
+
+
+```
+
+You can't have matches without wrestlers. The following link contains the top 100 wrestlers, according to cagematch: https://www.cagematch.net/?id=2&view=statistcics
+
+4. Of the top 100, who has wrestled the most matches?
+```{r}
+library(foreach)
+library(doParallel)
+
+all_wrestler_link <- read_html(url("https://www.cagematch.net/?id=2&view=statistics")) %>% 
+  html_elements("a[href*='gimmick=']") %>%
+  html_attr("href") %>% 
+  paste0("https://www.cagematch.net/", .)
+
+#test__link <- read_html(url(all_wrestler_link[1])) %>% 
+  #html_element("a[href*='page=22']") %>% 
+  #html_attr("href") %>% 
+  #paste0("https://www.cagematch.net/", .)
+
+collected_links <- vector("character", length(all_wrestler_link))
+
+no_cores <- detectCores() - 1  # Leave one core free
+cl <- makeCluster(no_cores)
+registerDoParallel(cl)
+
+collected_links <- foreach(i = seq_along(all_wrestler_link), .packages = "rvest") %dopar% {
+
+  match_stats <- read_html(url(all_wrestler_link[[i]]))
+  
+  specific_link <- match_stats %>%
+    html_element("a[href*='page=22']") %>%
+    html_attr("href") %>%
+    paste0("https://www.cagematch.net/", .)
+  return(specific_link)
+}
+
+stopCluster(cl)
+#test_link <- read_html(url(collected_links[1]))
+
+#wrestler_name <- test_link %>%
+  #html_element("h1.TextHeader") %>% 
+  #html_text()
+  
+
+  #match_number <- test_link %>%
+    #html_elements(".InformationBoxContents") %>% 
+    #html_text(trim = TRUE)
+
+collected_links <- collected_links[collected_links != "https://www.cagematch.net/NA"]
+
+collected_data <- data.frame(WrestlerName = character(), 
+                             MatchNumbers = character(),
+                             Wins = character(),
+                             Losses = character(),
+                             stringsAsFactors = FALSE)
+
+for (i in seq_along(collected_links)) {
+  match_detail <- read_html(url(collected_links[[i]]))
+  
+  wrestler_name <- match_detail %>%
+    html_element("h1.TextHeader") %>% 
+    html_text()
+
+  match_number <- match_detail %>%
+    html_elements(".InformationBoxContents") %>% 
+    html_text(trim = TRUE)
+  
+  if(length(match_number) >= 3) {
+  # Assign each piece of information to a variable
+  match_numbers <- match_number[1]
+  wins <- match_number[2]
+  losses <- match_number[3]
+  
+  collected_data <- rbind(collected_data, data.frame(WrestlerName = wrestler_name, 
+                                      MatchNumbers = match_numbers,
+                                      Wins = wins,
+                                      Losses = losses,
+                                      stringsAsFactors = FALSE))
+  }
+}
+#remove the parenthesis in colum Wins and losses include the content in  the parenthesis 
+collected_data$Wins <- gsub("\\(.*\\)", "", collected_data$Wins)
+collected_data$Losses <- gsub("\\(.*\\)", "", collected_data$Losses)
+
+
+
+collected_data$MatchNumber <- as.numeric(collected_data$MatchNumbers,collected_data$Wins, collected_data$Losses)   
+collected_data[which.max(collected_data$MatchNumber),]
+
+```
+
+
+Of the top 100, which wrestler has the best win/loss?
+```{r}
+#create a new column for win/loss ratio
+collected_data$WinLossRatio <- as.numeric(collected_data$Wins) / as.numeric(collected_data$Losses)
+collected_data[which.max(collected_data$WinLossRatio),]
+
+collected_data[which.max(collected_data$WinLossRatio[!is.infinite(collected_data$WinLossRatio)]),]
+
+```
+
+
+
+5. With all of this work out of the way, we can start getting down to strategy.
+
+First, what talent should WWE pursue? 
+
+Second, reconcile what you found in steps 3 and 4 with Netflix's relationship with WWE. Use the data from the following page to help make your case: https://wrestlenomics.com/tv-ratings/
+
+Third, do you have any further recommendations for WWE?
+
+<span style="background-color: yellow">
+WWE should look into some talented Japanese wrestlers as they have a good rating on Cagematch and also have a good win/loss ratio compare to the domestic ones. So in general WWE should look into international talent or just grab more famous people because Logan Paul joined WWE and the stock price rose during his participation. People like Jonny Manziel, Tim Tebow, football didn't work out but they got a strong body, they should be the talent WWE chasing for too.
+
+Netflix will help WWE RAW reach more countries, North America, UK, Latin America. From Step 3 and 4 we can see that there is a global fan base for WWE and they should absolutely take advantage of this, potentially use more of Netflix network to reach more countries and audience who love wrestling.
+
+I think under any conditions regarding the allegation, WWE should have Vince McMahon beck to the company as he is the face of the sport much like Ric Flair and Hulk Hogan not John Cena(because you cannot see him). I would think the company's audience would not care too much about the allegation because he already beat it once last year. The Rock in the company should also help them and maybe use his connections in the film industry.  
+</span>
+
