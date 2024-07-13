@@ -1,0 +1,203 @@
+---
+title: "Top Wrestler Comments Sentiment Analysis"
+author: "Your Name Here"
+format:
+  html:
+    toc: true
+    toc-location: left
+    self-contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+https://www.cagematch.net/?id=2&view=statistics. Specifically,  get the ratings/comments tables for each wrestler.
+```{r}
+library(foreach)
+library(doParallel)
+library(rvest)
+library(httr)
+library(dplyr)
+library(stringr)
+library(purrr)
+
+all_wrestler_link <- read_html(url("https://www.cagematch.net/?id=2&view=statistics")) %>% 
+  html_elements("a[href*='gimmick=']") %>%
+  html_attr("href") %>% 
+  paste0("https://www.cagematch.net/", .)
+
+collected_links <- vector("character", length(all_wrestler_link))
+
+no_cores <- detectCores() - 1  # Leave one core free
+cl <- makeCluster(no_cores)
+registerDoParallel(cl)
+
+collected_links <- foreach(i = seq_along(all_wrestler_link), .packages = "rvest") %dopar% {
+
+  wresler_links <- read_html(url(all_wrestler_link[[i]]))
+  
+  specific_link <- wresler_links %>%
+    html_element("a[href*='page=99']") %>%
+    html_attr("href") %>%
+    paste0("https://www.cagematch.net/", .)
+  return(specific_link)
+}
+
+stopCluster(cl)
+
+# rcs <- read_html(url(collected_links[[1]]))
+# wrestler_name <- rcs %>%
+#   html_element("h1.TextHeader") %>% 
+#   html_text()
+# comments_data <- rcs %>%
+#   html_elements(".CommentContents") %>%
+#   html_text() %>% 
+#   map_df(~{
+#     # Separate rating 
+#     parts <- str_match(.x, "\\[(.*?)\\]\\s*(.*)")
+#     rating <- parts[,2]  #rating 
+#     comment <- parts[,3]  #comments
+#     
+#     tibble(
+#       Rating = as.numeric(rating),
+#       Comment = comment
+#     )
+#   })  
+#   
+#Multi Core Processing
+
+collected_data <- data.frame(WrestlerName = character(), 
+                             Ratings = numeric(),
+                             Comments = character(),
+                             stringsAsFactors = FALSE)
+
+for (i in seq_along(collected_links)) {
+  rcs <- read_html(url(collected_links[[i]]))
+  
+  wrestler_name <- rcs %>%
+  html_element("h1.TextHeader") %>% 
+  html_text()
+comments_data <- rcs %>%
+  html_elements(".CommentContents") %>%
+  html_text() %>% 
+  map_df(~{
+    # Separate rating 
+    parts <- str_match(.x, "\\[(.*?)\\]\\s*(.*)")
+    rating <- parts[,2]  #rating 
+    comment <- parts[,3]  #comments
+    
+    tibble(
+      Rating = as.numeric(rating),
+      Comment = comment
+    )
+  }) 
+  
+  wrestler_data <- mutate(comments_data, WrestlerName = wrestler_name)
+  
+  # Bind the data to the collected_data data frame
+  collected_data <- rbind(collected_data, wrestler_data)
+  
+}
+
+#remove NA's in collected_data
+collected_data <- na.omit(collected_data)
+#remove quotation marks in collected_data$Comment
+collected_data$Comment <- gsub("\"", "", collected_data$Comment)
+#save collected_data to a csv file in C:/unstructur/
+write.csv(collected_data, "C:/MSBA 24/unstructur/collected_data.csv")
+
+```
+
+
+Perform two sentiment analysis. What is the relationship between a reviewer's sentiment and their rating?
+```{python}
+from bs4 import BeautifulSoup
+import pandas as pd
+import requests
+from transformers import pipeline
+import torch
+
+#import collected_data.csv from C:/MSBA 24/unstructur as collected_data in python environment
+collected_data = pd.read_csv("C:/MSBA 24/unstructur/collected_data.csv")
+
+sentiment_analysis = pipeline('sentiment-analysis')
+
+sentiments = []
+sentiment_scores = []
+
+for comment in collected_data['Comment']:
+  #because I ran into the problem that transformer can only handle 512 tokens at a time, I truncated the comments to 512
+  truncated_comment = str(comment[:512])
+
+  sentiment_result = sentiment_analysis(truncated_comment)
+  
+    # Append sentiment label and score to the lists
+  sentiments.append(sentiment_result[0]['label'])
+  sentiment_scores.append(sentiment_result[0]['score'])
+
+#add the lists as new columns in the DataFrame
+collected_data['Sentiment'] = sentiments
+collected_data['SentimentScore'] = sentiment_scores
+
+#save the DataFrame to a csv file in C:/MSBA 24/unstructur/
+collected_data.to_csv("C:/MSBA 24/unstructur/collected_data_with_sentiment.csv")
+
+```
+
+
+
+```{r}
+library(sentimentr)
+library(magrittr)
+library(dplyr)
+collected_data <- collected_data %>%
+  rowwise() %>%
+  mutate(ReviewScore = list(mean(sentiment(Comment)$sentiment)))
+
+# Convert the 'Rating' and 'ReviewScore' columns to numeric
+collected_data$Rating <- as.numeric(as.character(collected_data$Rating))
+collected_data$ReviewScore <- as.numeric(as.character(collected_data$ReviewScore))
+
+corr <- cor(collected_data$Rating, collected_data$ReviewScore, use = "complete.obs")
+
+
+```
+
+
+Perform any type of topic modeling on the comments. What are the main topics of the comments? How can you use those topics to understand what people value?
+```{python}
+from bertopic import BERTopic
+from bertopic.vectorizers import ClassTfidfTransformer
+import pandas as pd
+
+comments = pd.read_csv("C:/MSBA 24/unstructur/collected_data.csv")
+
+comments['Comment'] = comments['Comment'].astype('str')
+
+comments['Comment'] = comments['Comment'].str.replace(r'\b[Ii][Mm]\b', '', regex=True)
+comments['Comment'] = comments['Comment'].str.replace(r'\b[Aa][Mm]\b', '', regex=True)
+
+
+ctfidf_model = ClassTfidfTransformer(reduce_frequent_words=True)
+
+topic_model = BERTopic(ctfidf_model=ctfidf_model)
+
+topics, probs = topic_model.fit_transform(comments['Comment'].to_list())
+
+topic_model.reduce_topics(comments['Comment'].to_list(), nr_topics=10)
+
+topic_model.get_topic_info()
+
+
+topic_model.get_topic(0)
+
+topic_model.get_document_info(comments['Comment'])
+
+topic_model.get_representative_docs(0)
+
+topic_model.generate_topic_labels()
+
+```
+
